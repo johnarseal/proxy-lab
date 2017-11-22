@@ -1,4 +1,5 @@
 #include "csapp.h"
+#include <pthread.h>
 
 /* Recommended max cache and object sizes */
 #define MAX_CACHE_SIZE 1049000
@@ -11,7 +12,7 @@
 #define HOSTLEN 256
 #define SERVLEN 8
 #define MAX_RESPONSE_SIZE 512000
-
+#define DEBUG 0
 
 static const char *header_user_agent = "Mozilla/5.0"
                                     " (X11; Linux x86_64; rv:45.0)"
@@ -255,6 +256,59 @@ int forward_get(char *host, char *port, char *forward_buf, int num_forward, char
 
 }
 
+
+void *handle_connect(void *arg){
+    
+    pthread_detach(pthread_self());    
+    
+    client_info *client = (client_info *) arg; 
+
+    char forward_buf[MAXLINE];
+    char forward_host[HOST_CHAR_NUM];
+    char forward_port[PORT_CHAR_NUM];
+    char response_buf[MAX_RESPONSE_SIZE];
+    int bytes_response, real_write, num_forward_bytes;
+
+    if((num_forward_bytes = 
+            validate_replace(client, forward_buf, 
+                forward_host, forward_port)) < 0){
+        fprintf(stdout, "error parsing request\n");
+    }
+    else{
+        // for debug
+        if(DEBUG){
+            fprintf(stdout, "Forwarding %d bytes to %s:%s\n",
+                num_forward_bytes,forward_host,forward_port);
+            fprintf(stdout, "%s",forward_buf);
+        }
+
+        if((bytes_response = forward_get(forward_host, forward_port, 
+            forward_buf, num_forward_bytes, response_buf)) < 0){
+            fprintf(stderr, "error when forwarding and getting response\n");
+        }
+        else{
+            // for debug
+            if(DEBUG){
+                fprintf(stdout, "Get %d bytes\n", bytes_response);
+                fprintf(stdout, "%s",response_buf);
+            }
+
+            // Write message back to client
+            if ((real_write = rio_writen(client->connfd, response_buf, bytes_response)) != bytes_response) {
+                fprintf(stderr, "Error writing to back to client, write %d\n", real_write);
+            }
+        }
+
+    }
+
+    // close the client
+    Close(client->connfd);
+    free(client);
+
+    return NULL;
+
+}
+
 int main(int argc, char** argv) {
 
     if(argc != 2){
@@ -262,8 +316,12 @@ int main(int argc, char** argv) {
         exit(0);
     }
     char *self_port = argv[1];
-    int listenfd, num_forward_bytes;
+    int listenfd;
+    pthread_t tid;
     
+    client_info *client;
+
+
     // Start listening on the given port number
     if((listenfd = Open_listenfd(self_port)) < 0){
         fprintf(stderr,"can not listen on port:%s, errnum:%d\n",self_port,listenfd);
@@ -273,14 +331,7 @@ int main(int argc, char** argv) {
 
     while(1){
         // Allocate space on the stack for client info
-        client_info client_data;
-        client_info *client = &client_data;
-
-        char forward_buf[MAXLINE];
-        char forward_host[HOST_CHAR_NUM];
-        char forward_port[PORT_CHAR_NUM];
-        char response_buf[MAX_RESPONSE_SIZE];
-        int bytes_response, real_write;
+        client = (client_info *)malloc(sizeof(client_info));
 
         // Initialize the length of the address
         client->addrlen = sizeof(client->addr);
@@ -289,34 +340,8 @@ int main(int argc, char** argv) {
         client->connfd = Accept(listenfd, 
                 (SA*) &client->addr, &client->addrlen);
         
+        pthread_create(&tid, NULL, &handle_connect, client);
 
-        if((num_forward_bytes = 
-                validate_replace(client, forward_buf, 
-                    forward_host, forward_port)) < 0){
-            fprintf(stdout, "error parsing request\n");
-        }
-        else{
-            // for debug
-            //fprintf(stdout, "Forwarding %d bytes to %s:%s\n",
-            //    num_forward_bytes,forward_host,forward_port);
-            //fprintf(stdout, "%s",forward_buf);
-            if((bytes_response = forward_get(forward_host, forward_port, 
-                forward_buf, num_forward_bytes, response_buf)) < 0){
-                fprintf(stderr, "error when forwarding and getting response\n");
-            }
-            else{
-                //fprintf(stdout, "Get %d bytes\n", bytes_response);
-                //fprintf(stdout, "%s",response_buf);
-                // Write message back to client
-                if ((real_write = rio_writen(client->connfd, response_buf, bytes_response)) != bytes_response) {
-                    fprintf(stderr, "Error writing to back to client, write %d\n", real_write);
-                }
-            }
-
-        }
-
-        // close the client
-        Close(client->connfd);
     }
 
     return 0;
