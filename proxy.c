@@ -9,7 +9,7 @@
 #define MAX_TOKEN_LEN 100
 #define PORT_CHAR_NUM 6
 #define HOST_CHAR_NUM 50
-#define REST_CHAR_NUM 100
+#define REST_CHAR_NUM 200
 #define HOSTLEN 256
 #define SERVLEN 8
 #define MAX_RESPONSE_SIZE 512000
@@ -163,7 +163,7 @@ int validate_replace(client_info *client, char *forward_buf,
             }
             if(strcmp(tokens[0], "GET") != 0){
                 fprintf(stderr, 
-                  "Currently only support GET method\n");
+                  "Currently only support GET method, received %s\n",tokens[0]);
                 return -1;
             }
             if(parse_uri(tokens[1], port, host, rest) < 0){
