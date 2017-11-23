@@ -1,8 +1,9 @@
 #include "csapp.h"
 #include <pthread.h>
+#include "cache.h"
 
-/* Recommended max cache and object sizes */
-#define MAX_CACHE_SIZE 1049000
+
+
 #define MAX_OBJECT_SIZE 102400
 #define MAX_TOKEN_NUM 4
 #define MAX_TOKEN_LEN 100
@@ -129,7 +130,8 @@ int parse_uri(char* uri, char* port, char* host, char* rest){
  * and forward the message
  */
 
-int validate_replace(client_info *client, char *forward_buf, char* host, char*port){
+int validate_replace(client_info *client, char *forward_buf,
+                 char* host, char*port, char*uri){
 
     ssize_t len;
     int num_line = 0, num_tokens, has_end = 0, host_appear = 0;
@@ -167,6 +169,8 @@ int validate_replace(client_info *client, char *forward_buf, char* host, char*po
             if(parse_uri(tokens[1], port, host, rest) < 0){
                 fprintf(stderr, "Error in parsing uri\n");
             }
+            // get the uri    
+            strcpy(uri,tokens[1]);
             // if the port not specified, use 80
             if(*port == 0){
                 strcpy(port,"80");
@@ -266,39 +270,55 @@ void *handle_connect(void *arg){
     char forward_buf[MAXLINE];
     char forward_host[HOST_CHAR_NUM];
     char forward_port[PORT_CHAR_NUM];
-    char response_buf[MAX_RESPONSE_SIZE];
+    char *response_buf;
     int bytes_response, real_write, num_forward_bytes;
+    char uri[HOST_CHAR_NUM + REST_CHAR_NUM]; 
+   
+    cache_block *cache_entry;
 
     if((num_forward_bytes = 
             validate_replace(client, forward_buf, 
-                forward_host, forward_port)) < 0){
+                forward_host, forward_port, uri)) < 0){
         fprintf(stdout, "error parsing request\n");
     }
     else{
-        // for debug
-        if(DEBUG){
-            fprintf(stdout, "Forwarding %d bytes to %s:%s\n",
-                num_forward_bytes,forward_host,forward_port);
-            fprintf(stdout, "%s",forward_buf);
-        }
-
-        if((bytes_response = forward_get(forward_host, forward_port, 
-            forward_buf, num_forward_bytes, response_buf)) < 0){
-            fprintf(stderr, "error when forwarding and getting response\n");
-        }
-        else{
-            // for debug
-            if(DEBUG){
-                fprintf(stdout, "Get %d bytes\n", bytes_response);
-                fprintf(stdout, "%s",response_buf);
-            }
-
+        if((cache_entry = cache_exist(uri)) != NULL){
+            // if it is cached
+            bytes_response = cache_entry->bytes;
+            response_buf = cache_entry->buf;
             // Write message back to client
             if ((real_write = rio_writen(client->connfd, response_buf, bytes_response)) != bytes_response) {
                 fprintf(stderr, "Error writing to back to client, write %d\n", real_write);
             }
+            // unlock the cache_entry
+            cache_read_done(cache_entry);
         }
+        else{
 
+            // dynamically allocate buffer for storing response
+            response_buf = (char *)malloc(MAX_RESPONSE_SIZE);
+
+            if((bytes_response = forward_get(forward_host, forward_port, 
+                forward_buf, num_forward_bytes, response_buf)) < 0){
+                fprintf(stderr, "error when forwarding and getting response\n");
+            }
+            else{
+                // Write message back to client
+                if ((real_write = rio_writen(client->connfd, response_buf, bytes_response)) != bytes_response) {
+                    fprintf(stderr, "Error writing to back to client, write %d\n", real_write);
+                }
+                else{
+                    // if response is small, cache it
+                    if(bytes_response <= MAX_OBJECT_SIZE){
+                        cache_store(uri, response_buf, bytes_response);
+                    }
+                    else{
+                        // if not cached, free the buf
+                        free(response_buf);
+                    }
+                }
+            }
+        }
     }
 
     // close the client
@@ -321,6 +341,7 @@ int main(int argc, char** argv) {
     
     client_info *client;
 
+    cache_init();
 
     // Start listening on the given port number
     if((listenfd = Open_listenfd(self_port)) < 0){
